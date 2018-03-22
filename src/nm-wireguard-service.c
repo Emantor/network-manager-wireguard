@@ -119,39 +119,9 @@ G_DEFINE_TYPE (NMWireguardPlugin, nm_wireguard_plugin, NM_TYPE_VPN_SERVICE_PLUGI
 		} \
 	} G_STMT_END
 
-static gboolean
-_LOGD_enabled (void)
-{
-	return gl.log_level >= LOG_INFO;
-}
-
 #define _LOGD(...) _NMLOG(LOG_INFO,    __VA_ARGS__)
 #define _LOGI(...) _NMLOG(LOG_NOTICE,  __VA_ARGS__)
 #define _LOGW(...) _NMLOG(LOG_WARNING, __VA_ARGS__)
-
-/*****************************************************************************/
-
-static const char *
-wg_quick_find_exepath (void)
-{
-	static const char *paths[] = {
-		"/usr/sbin/wg-quick",
-		"/usr/bin/wg-quick",
-		"/sbin/wg-quick",
-		"/bin/wg-quick",
-		"/usr/local/sbin/wg-quick",
-		"/usr/local/bin/wg-quick",
-	};
-	int i;
-
-	for (i = 0; i < G_N_ELEMENTS(paths); i++) {
-		if (g_file_test (paths[i], G_FILE_TEST_EXISTS)) {
-			return paths[i];
-		}
-	}
-
-	return NULL;
-}
 
 /*****************************************************************************/
 
@@ -161,18 +131,10 @@ wg_disconnect(NMVpnServicePlugin *plugin,
 				GError **error)
 {
 	NMWireguardPluginPrivate *priv = NM_WIREGUARD_PLUGIN_GET_PRIVATE(plugin);
-	const char *wg_quick_path = wg_quick_find_exepath();
-	char *filename = priv->connection_file;
 	GString *cfg_content = priv->connection_config;
-	char *command;
 	int retcode = 1;
 
-	if(wg_quick_path == NULL){
-		_LOGW("Error: Could not find wg-quick!");
-		return FALSE;
-	}
-
-	if(!filename || !cfg_content){
+	if(!cfg_content){
 		_LOGW("Error: Cannot remember the connection details for Disconnect");
 		g_set_error_literal(error,
 							NM_VPN_PLUGIN_ERROR,
@@ -182,21 +144,9 @@ wg_disconnect(NMVpnServicePlugin *plugin,
 	}
 
 	// create the temporary configuration file
-	g_file_set_contents(filename, cfg_content->str, cfg_content->len, error);
-	g_chmod(filename, 0400);
-
-	// join together our command
-	command = g_strdup_printf("%s down %s", wg_quick_path, filename);
-
-	if(!g_spawn_command_line_sync(command, NULL, NULL, &retcode, error)){
-		_LOGW("An error occured while spawning wg-quick! (Error: %s)", (*error)->message);
-	}
 
 	// delete the file and free temporary private data
-	g_remove(filename);
-	g_free(command);
 	g_string_free(priv->connection_config, TRUE);
-	g_free(priv->connection_file);
 	priv->connection_config = NULL;
 	priv->connection_file = NULL;
 
@@ -440,18 +390,11 @@ connect_common(NMVpnServicePlugin *plugin,
 				GError **error)
 {
 	NMWireguardPluginPrivate *priv = NM_WIREGUARD_PLUGIN_GET_PRIVATE(plugin);
-	const char *wg_quick_path = wg_quick_find_exepath();
 	const char *connection_name = nm_connection_get_id(connection);
-	char *command;
 	int retcode = 1;
-	char *filename = NULL;
 	GString *connection_config = NULL;
 
 	_LOGI("Setting up Wireguard Connection ('%s')", connection_name);
-	if(wg_quick_path == NULL){
-		_LOGW("Error: Could not find wg-quick!");
-		return FALSE;
-	}
 
 	// take the connection details and create the configuration string from it
 	connection_config = create_config_string(connection, error);
@@ -464,26 +407,9 @@ connect_common(NMVpnServicePlugin *plugin,
 		return FALSE;
 	}
 	priv->connection_config = connection_config;
-	filename = g_strdup_printf("/tmp/%s.conf", connection_name);
-	priv->connection_file = filename;
 
-	if(!do_export(filename, connection, error)){
-		_LOGW("Error: Could not create temporary configuration file for connection '%s'", connection_name);
-		return FALSE;
-	}
-	g_chmod(filename, 0400);
-
-	// join together our command
-	command = g_strdup_printf("%s up %s", wg_quick_path, filename);
-
-	if(!g_spawn_command_line_sync(command, NULL, NULL, &retcode, error)){
-		_LOGW("An error occured while spawning wg-quick! (Error: %s)", (*error)->message);
-		return FALSE;
-	}
 
 	// remove the file and free the command string
-	g_remove(filename);
-	g_free(command);
 
 	set_config(plugin, connection);
 
