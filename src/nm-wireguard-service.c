@@ -47,6 +47,7 @@
 #include <glib-unix.h>
 
 #include "utils.h"
+#include "wireguard.h"
 #include "import-export.h"
 #include "nm-utils/nm-shared-utils.h"
 #include "nm-utils/nm-vpn-plugin-macros.h"
@@ -100,7 +101,8 @@ typedef struct {
 	gboolean interactive;
 	char *mgt_path;
 	char *connection_file;
-	GString *connection_config;
+	wg_device *device;
+	wg_peer **peers;
 } NMWireguardPluginPrivate;
 
 G_DEFINE_TYPE (NMWireguardPlugin, nm_wireguard_plugin, NM_TYPE_VPN_SERVICE_PLUGIN)
@@ -131,10 +133,10 @@ wg_disconnect(NMVpnServicePlugin *plugin,
 				GError **error)
 {
 	NMWireguardPluginPrivate *priv = NM_WIREGUARD_PLUGIN_GET_PRIVATE(plugin);
-	GString *cfg_content = priv->connection_config;
+	wg_device *priv_dev = priv->device;
 	int retcode = 1;
 
-	if(!cfg_content){
+	if(!priv_dev){
 		_LOGW("Error: Cannot remember the connection details for Disconnect");
 		g_set_error_literal(error,
 							NM_VPN_PLUGIN_ERROR,
@@ -143,11 +145,22 @@ wg_disconnect(NMVpnServicePlugin *plugin,
 		return FALSE;
 	}
 
+
+	if (wg_del_device(priv_dev->name) < 0) {
+		_LOGW("Error: Cannot remove device '%s'", priv_dev->name);
+		g_set_error_literal(error,
+							NM_VPN_PLUGIN_ERROR,
+							NM_VPN_PLUGIN_ERROR_FAILED,
+							"Cannot remove device!");
+	}
+
 	// create the temporary configuration file
 
 	// delete the file and free temporary private data
-	g_string_free(priv->connection_config, TRUE);
-	priv->connection_config = NULL;
+	free(priv->peers);
+	priv->peers = NULL;
+	free(priv_dev);
+	priv->device = NULL;
 	priv->connection_file = NULL;
 
 	_LOGI("Disconnected from Wireguard Connection!");
@@ -392,26 +405,33 @@ connect_common(NMVpnServicePlugin *plugin,
 	NMWireguardPluginPrivate *priv = NM_WIREGUARD_PLUGIN_GET_PRIVATE(plugin);
 	const char *connection_name = nm_connection_get_id(connection);
 	int retcode = 1;
-	GString *connection_config = NULL;
-
+	wg_device *priv_device = priv->device;
+	wg_peer **priv_peers = priv->peers;
+	int saved_errno = 0;
+	const char * name = NULL;
 	_LOGI("Setting up Wireguard Connection ('%s')", connection_name);
 
 	// take the connection details and create the configuration string from it
-	connection_config = create_config_string(connection, error);
-	if(!connection_config){
-		_LOGW("Error: Could not create configuration for connection '%s'!", connection_name);
+
+	fill_device_from_config(&priv_device, &priv_peers, connection);
+	_LOGI("Name: '%s'!", priv_device->name);
+	if (wg_add_device(priv_device->name) <0) {
+		_LOGW("Error: Could not create device '%s'!", priv_device->name);
 		g_set_error_literal(error,
 							NM_VPN_PLUGIN_ERROR,
 							NM_VPN_PLUGIN_ERROR_FAILED,
-							"Could not create configuration from connection");
+							"Could not create device from connection");
+		return FALSE;
+	};
+
+	if((saved_errno = wg_set_device(&priv_device)) <0) {
+		_LOGW("Error: Could not set device '%s' ('%s')!", priv_device->name, strerror(saved_errno) );
+		g_set_error_literal(error,
+							NM_VPN_PLUGIN_ERROR,
+							NM_VPN_PLUGIN_ERROR_FAILED,
+							"Could not set device from connection");
 		return FALSE;
 	}
-	priv->connection_config = connection_config;
-
-
-	// remove the file and free the command string
-
-	set_config(plugin, connection);
 
 	return TRUE;
 }
@@ -424,7 +444,10 @@ wg_connect (NMVpnServicePlugin *plugin,
 				GError **error)
 {
 	_LOGI("Connecting to Wireguard: '%s'", nm_connection_get_id(connection));
-	return connect_common(plugin, connection, NULL, error);
+	if(!connect_common(plugin, connection, NULL, error)) {
+		wg_del_device("wg_test");
+		return FALSE;
+	}
 }
 
 // interactive connect (allows for user interaction)
@@ -467,6 +490,9 @@ wg_new_secrets (NMVpnServicePlugin *plugin,
 static void
 nm_wireguard_plugin_init (NMWireguardPlugin *plugin)
 {
+	NMWireguardPluginPrivate *priv = NM_WIREGUARD_PLUGIN_GET_PRIVATE(plugin);
+	priv->device = calloc(1, sizeof(wg_device));
+	priv->peers = calloc(127, sizeof(wg_peer));
 }
 
 static void
@@ -481,7 +507,9 @@ nm_wireguard_plugin_class_init (NMWireguardPluginClass *plugin_class)
 	GObjectClass *object_class = G_OBJECT_CLASS (plugin_class);
 	NMVpnServicePluginClass *parent_class = NM_VPN_SERVICE_PLUGIN_CLASS (plugin_class);
 
-	g_type_class_add_private (object_class, sizeof (NMWireguardPluginPrivate));
+	g_type_class_add_private(object_class, sizeof (NMWireguardPluginPrivate));
+
+
 
 	object_class->dispose = dispose;
 

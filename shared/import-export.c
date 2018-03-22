@@ -36,6 +36,7 @@
 
 #include "utils.h"
 #include "nm-utils/nm-shared-utils.h"
+#include "wireguard.h"
 
 const char *_nmovpn_test_temp_path = NULL;
 
@@ -1234,6 +1235,128 @@ create_config_string (NMConnection *connection, GError **error)
 	g_array_free(ips, TRUE);
 
 	return g_steal_pointer (&f);
+}
+
+gboolean
+fill_device_from_config (wg_device **device,wg_peer **peers, NMConnection *connection, GError **error)
+{
+	NMSettingConnection *s_con;
+	NMSettingVpn *s_vpn;
+	const char *ip4;
+	const char *ip6;
+	const char *listen_port;
+	const char *private_key;
+	const char *public_key;
+	const char *allowed_ips;
+	const char *endpoint;
+	const char *psk;
+	char *value = NULL;
+	char **ip_list, **ip_iter;
+	GArray *ips;
+	wg_device * priv_dev = *device;
+	wg_key priv_key;
+	wg_key pub_key;
+	wg_peer ** priv_peers = peers;
+	wg_peer *peer = *peers;
+	const char * name = NULL;
+
+	s_con = nm_connection_get_setting_connection (connection);
+	s_vpn = nm_connection_get_setting_vpn (connection);
+
+	if (!s_con || !s_vpn) {
+		g_set_error_literal (error,
+		                     NMV_EDITOR_PLUGIN_ERROR,
+		                     NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+		                     _("connection is not a valid Wireguard connection"));
+		return NULL;
+	}
+	ip4         = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_ADDR_IP4));
+	ip6         = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_ADDR_IP6));
+	listen_port = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_LISTEN_PORT));
+	private_key = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_PRIVATE_KEY));
+	public_key  = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_PUBLIC_KEY));
+	allowed_ips = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_ALLOWED_IPS));
+	endpoint    = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_ENDPOINT));
+	psk         = _arg_is_set(nm_setting_vpn_get_data_item(s_vpn, NM_WG_KEY_PRESHARED_KEY));
+
+	if(!ip4 && !ip6){
+		g_set_error_literal(error,
+							NMV_EDITOR_PLUGIN_ERROR,
+							NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+							"Connection was incomplete (missing local address)");
+		return FALSE;
+	}
+
+	if(!listen_port){
+		g_set_error_literal(error,
+							NMV_EDITOR_PLUGIN_ERROR,
+							NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+							"Connection was incomplete (missing local listen port)");
+		return FALSE;
+	}
+
+	if(!private_key){
+		g_set_error_literal(error,
+							NMV_EDITOR_PLUGIN_ERROR,
+							NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+							"Connection was incomplete (missing local private key)");
+		return FALSE;
+	}
+
+	if(!public_key){
+		g_set_error_literal(error,
+							NMV_EDITOR_PLUGIN_ERROR,
+							NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+							"Connection was incomplete (missing peer public key)");
+		return FALSE;
+	}
+
+	if(!endpoint){
+		g_set_error_literal(error,
+							NMV_EDITOR_PLUGIN_ERROR,
+							NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+							"Connection was incomplete (missing endpoint)");
+		return FALSE;
+	}
+
+	if(wg_key_from_base64(priv_key, private_key) <0){
+		g_set_error_literal(error,
+							NMV_EDITOR_PLUGIN_ERROR,
+							NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+							"Could not read private key");
+		return FALSE;
+
+	}
+
+	if(wg_key_from_base64(pub_key, public_key) <0){
+		g_set_error_literal(error,
+							NMV_EDITOR_PLUGIN_ERROR,
+							NMV_EDITOR_PLUGIN_ERROR_FILE_NOT_VPN,
+							"Could not read public key");
+		return FALSE;
+
+	}
+
+
+	strncpy(&(priv_dev->name), "wg_test", IFNAMSIZ);
+	memcpy(&(priv_dev->private_key), &priv_key, sizeof(priv_key));
+	memcpy(&(priv_dev->public_key), &pub_key, sizeof(pub_key));
+	priv_dev->listen_port = (uint16_t) atoi(listen_port);
+	priv_dev->flags = WGDEVICE_HAS_PRIVATE_KEY | WGDEVICE_HAS_LISTEN_PORT;
+
+
+	peer->flags = WGPEER_HAS_PUBLIC_KEY | WGPEER_REPLACE_ALLOWEDIPS;
+
+	wg_key temp_private_key;
+
+	wg_generate_private_key(temp_private_key);
+	wg_generate_public_key(peer->public_key, temp_private_key);
+
+	priv_dev->first_peer = peer;
+	priv_dev->last_peer = peer;
+
+	return TRUE;
+
 }
 
 // export the connection's configuration to a file in our (wg-quick) format
