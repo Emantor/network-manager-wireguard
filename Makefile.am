@@ -36,6 +36,7 @@ ui_DATA =
 shared_sources = \
 	shared/nm-utils/nm-shared-utils.c \
 	shared/utils.c \
+	shared/wireguard.c \
 	shared/import-export.c
 
 ###############################################################################
@@ -308,6 +309,8 @@ EXTRA_DIST += \
 	shared/utils.h \
 	shared/import-export.c \
 	shared/import-export.h \
+	shared/wireguard.c \
+	shared/wireguard.h \
 	$(NULL)
 
 CLEANFILES += \
